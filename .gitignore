@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.idea/
+.vscode/
+.venv/
+venv/
+ENV/
+.coverage
+htmlcov/
+
+# vnquant specific
+vnquant.egg-info/
