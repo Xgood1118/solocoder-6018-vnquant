@@ -332,15 +332,25 @@ def industry_ratio_comparison(symbols: List[str],
             rows.append(sym_row)
         qdf = pd.DataFrame(rows)
         for m in metrics:
-            order_group = qdf.copy()
-            valid = order_group[order_group[f'{m}_note'] == ''].copy()
-            if m in higher_is_better:
-                valid = valid.sort_values(m, ascending=False, na_position='last')
-            else:
-                valid = valid.sort_values(m, ascending=True, na_position='last')
-            rank_map = {s: i + 1 for i, s in enumerate(valid['symbol'])}
-            qdf.insert(qdf.columns.get_loc(f'{m}_note') + 1, f'{m}_rank',
-                       qdf['symbol'].map(rank_map))
+            rank_col = f'{m}_rank'
+            note_col = f'{m}_note'
+            qdf[rank_col] = np.nan
+            for ind, grp in qdf.groupby('industry'):
+                valid = grp[grp[note_col] == ''].copy()
+                if valid.empty:
+                    continue
+                if m in higher_is_better:
+                    valid = valid.sort_values(m, ascending=False, na_position='last')
+                else:
+                    valid = valid.sort_values(m, ascending=True, na_position='last')
+                rank_map = {s: i + 1 for i, s in enumerate(valid['symbol'])}
+                for s, r in rank_map.items():
+                    qdf.loc[qdf['symbol'] == s, rank_col] = r
+            col_idx = qdf.columns.get_loc(note_col)
+            cols = list(qdf.columns)
+            cols.remove(rank_col)
+            cols.insert(col_idx + 1, rank_col)
+            qdf = qdf[cols]
         qdf = qdf.set_index('symbol')
         rankings[q] = qdf
     return {
