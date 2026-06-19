@@ -72,7 +72,7 @@ def get_ind_class(
     payload_q_keys['industryLevel'] = ",".join([il for il in industry_levels])
     payload_q_keys['higherLevelCode'] = ",".join([hlc for hlc in higher_level_codes])
     payload_q_keys['englishName'] = english_name
-    payload_q_keys['englishName'] = vietnamese_name
+    payload_q_keys['vietnameseName'] = vietnamese_name
     payload_q_str = PAYLOAD_Q_JOIN_CHAR.join(
         [f"{key}:{value}" for key, value in payload_q_keys.items()]
     )
@@ -95,6 +95,57 @@ def get_ind_class(
     print('payload_str: ', payload_str)
     print('header: ', headers)
     return resp.json()
+
+
+def symbols_to_industry(code_list: List[str]) -> dict:
+    '''
+    Return a dict mapping each symbol to its industry info.
+    Fallback: if industry lookup fails, symbol maps to {'industryCode': None,
+    'industryName': 'Unknown', 'industryLevel': None}.
+    '''
+    mapping = {code: {'industryCode': None, 'industryName': 'Unknown',
+                      'industryLevel': None, 'englishName': 'Unknown'}
+               for code in code_list}
+    try:
+        resp = get_ind_class(code_list=code_list)
+        data = []
+        if isinstance(resp, dict):
+            if 'data' in resp:
+                data = resp['data']
+            elif 'Data' in resp:
+                data = resp['Data']
+            else:
+                data = [resp]
+        for item in data:
+            if isinstance(item, dict) and '_source' in item:
+                src = item['_source']
+            else:
+                src = item
+            codes = []
+            for k in ['codeList', 'code', 'secCode', 'tickers']:
+                v = src.get(k)
+                if v:
+                    if isinstance(v, list):
+                        codes.extend([str(c).upper() for c in v])
+                    elif isinstance(v, str):
+                        codes.extend([c.strip().upper() for c in v.split(',') if c.strip()])
+                    break
+            ind_code = src.get('industryCode')
+            ind_name = src.get('vietnameseName') or src.get('industryName') or ''
+            en_name = src.get('englishName') or ''
+            ind_level = src.get('industryLevel')
+            for c in codes:
+                if c in mapping:
+                    mapping[c] = {
+                        'industryCode': ind_code,
+                        'industryName': ind_name or 'Unknown',
+                        'industryLevel': ind_level,
+                        'englishName': en_name or 'Unknown'
+                    }
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Industry lookup failed: {e}")
+    return mapping
+
 
 
 def _convert_change_cafe(text: str):

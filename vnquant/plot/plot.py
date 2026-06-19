@@ -5,29 +5,128 @@ import vnquant.utils.utils as utils
 import pandas as pd
 import numpy as np
 
+
+def compute_bollinger_bands(data: pd.DataFrame, window: int = 20, num_std: float = 2.0,
+                            price_col: str = 'close') -> pd.DataFrame:
+    '''
+    Compute Bollinger Bands for price data.
+    Compatible with multi-period data returned by DataLoader.download_panel().
+
+    Args:
+        data: DataFrame containing price data (must have price_col).
+              Works with plain DataFrames and with MultiIndex columns.
+        window: rolling window size (default 20).
+        num_std: number of standard deviations for upper/lower bands (default 2.0).
+        price_col: which price column to use (default 'close').
+
+    Returns:
+        DataFrame with columns bb_mid, bb_upper, bb_lower. Index aligned with input.
+    '''
+    df = data.copy()
+    if isinstance(df.columns, pd.MultiIndex):
+        attrs = df.columns.get_level_values('Attributes')
+        if price_col not in attrs.values:
+            for cand in ['close', 'adjust', 'adjust_close', 'adjust_price']:
+                if cand in attrs.values:
+                    price_col = cand
+                    break
+        price = df.xs(price_col, level='Attributes', axis=1)
+        if isinstance(price, pd.DataFrame) and price.shape[1] == 1:
+            price = price.iloc[:, 0]
+        elif isinstance(price, pd.DataFrame) and price.shape[1] > 1:
+            price = price.iloc[:, 0]
+    else:
+        if price_col not in df.columns:
+            for cand in ['close', 'adjust', 'adjust_close', 'adjust_price']:
+                if cand in df.columns:
+                    price_col = cand
+                    break
+        price = df[price_col]
+
+    mid = price.rolling(window=window, min_periods=1).mean()
+    std = price.rolling(window=window, min_periods=1).std()
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+
+    result = pd.DataFrame({
+        'bb_mid': mid,
+        'bb_upper': upper,
+        'bb_lower': lower
+    }, index=df.index)
+    return result
+
 def _vnquant_candle_stick_source(symbol,
                                  start_date, end_date,
                                  colors=['blue', 'red'],
                                  width=800, height=600,
                                  show_vol=True,
                                  data_source='VND',
+                                 bollinger: bool = False,
+                                 bb_window: int = 20,
+                                 bb_std: float = 2.0,
                                  **kargs):
     loader = DataLoader(symbol, start_date, end_date, minimal=True, data_source=data_source)
     data = loader.download()
     symbol = list(data.columns.levels[1])[0]
     data.columns = ['high', 'low', 'open', 'close', 'adjust', 'volume']
     title = '{} stock price & volume from {} to {}'.format(symbol, start_date, end_date)
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02,
-                        # subplot_titles=('Price', 'Volume'),
-                        row_heights=[0.6, 0.4])
+    rows = 2 if show_vol else 1
+    row_heights = [0.6, 0.4] if show_vol else [1.0]
+    fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.02,
+                        row_heights=row_heights)
 
     fig.append_trace(go.Candlestick(
         x=data.index,
         open=data['open'], high=data['high'],
         low=data['low'], close=data['close'],
         increasing_line_color=colors[0],
-        decreasing_line_color=colors[1]),
+        decreasing_line_color=colors[1],
+        name='price'),
         row=1, col=1)
+
+    if bollinger:
+        bb = compute_bollinger_bands(data, window=bb_window, num_std=bb_std, price_col='close')
+        touch_upper = (data['high'] >= bb['bb_upper'])
+        touch_lower = (data['low'] <= bb['bb_lower'])
+        fig.append_trace(go.Scatter(
+            x=data.index, y=bb['bb_upper'],
+            mode='lines', line=dict(color='rgba(180, 0, 0, 0.8)', width=1.2),
+            name=f'BB Upper ({bb_window},{bb_std})',
+            legendgroup='bollinger'),
+            row=1, col=1)
+        fig.append_trace(go.Scatter(
+            x=data.index, y=bb['bb_mid'],
+            mode='lines', line=dict(color='rgba(80, 80, 80, 0.8)', width=1.0, dash='dash'),
+            name=f'BB Mid SMA{bb_window}',
+            legendgroup='bollinger'),
+            row=1, col=1)
+        fig.append_trace(go.Scatter(
+            x=data.index, y=bb['bb_lower'],
+            mode='lines', line=dict(color='rgba(0, 120, 0, 0.8)', width=1.2),
+            fill='tonexty', fillcolor='rgba(180, 180, 255, 0.08)',
+            name=f'BB Lower ({bb_window},{bb_std})',
+            legendgroup='bollinger'),
+            row=1, col=1)
+        if touch_upper.any():
+            fig.append_trace(go.Scatter(
+                x=data.index[touch_upper],
+                y=data['high'][touch_upper],
+                mode='markers',
+                marker=dict(color='red', size=8, symbol='circle-open', line_width=2),
+                name='Touch Upper Band',
+                showlegend=True,
+                legendgroup='bollinger'),
+                row=1, col=1)
+        if touch_lower.any():
+            fig.append_trace(go.Scatter(
+                x=data.index[touch_lower],
+                y=data['low'][touch_lower],
+                mode='markers',
+                marker=dict(color='green', size=8, symbol='circle-open', line_width=2),
+                name='Touch Lower Band',
+                showlegend=True,
+                legendgroup='bollinger'),
+                row=1, col=1)
 
     if show_vol:
         fig.append_trace(go.Bar(
@@ -42,7 +141,7 @@ def _vnquant_candle_stick_source(symbol,
         xaxis_title='Date',
         width=width,
         height=height,
-        showlegend=False
+        showlegend=True
     )
 
     fig.show()
@@ -54,6 +153,9 @@ def vnquant_candle_stick_source(
         width=800, height=600,
         data_source='VND',
         show_advanced = ['volume', 'macd', 'rsi'],
+        bollinger: bool = False,
+        bb_window: int = 20,
+        bb_std: float = 2.0,
         **kargs
     ):
     '''
@@ -67,6 +169,9 @@ def vnquant_candle_stick_source(
         height (int: 600): height of graph figure
         data_source (string: 'VND'): data source to get stock price
         show_advanced (list: ['volume', 'macd', 'rsi']): list of advanced stock index to show up.
+        bollinger (bool: False): whether to overlay Bollinger Bands on the main price chart.
+        bb_window (int: 20): Bollinger Bands rolling window size.
+        bb_std (float: 2.0): Bollinger Bands number of standard deviations.
         
     Example:
         from vnquant import plot as pl
@@ -77,7 +182,8 @@ def vnquant_candle_stick_source(
             start_date='2022-01-01',
             end_date='2022-10-01',
             data_source='CAFE',
-            show_advanced = ['volume', 'macd', 'rsi']
+            show_advanced = ['volume', 'macd', 'rsi'],
+            bollinger=True, bb_window=20, bb_std=2.0
         )
     '''
     
@@ -161,6 +267,52 @@ def vnquant_candle_stick_source(
         ),
         row=r_price, col=1
     )
+
+    # Compute & plot Bollinger Bands
+    if bollinger:
+        bb = compute_bollinger_bands(data, window=bb_window, num_std=bb_std, price_col='close')
+        touch_upper = (data['high'] >= bb['bb_upper'])
+        touch_lower = (data['low'] <= bb['bb_lower'])
+        fig.append_trace(
+            go.Scatter(
+                x=data.index, y=bb['bb_upper'],
+                mode='lines', line=dict(color='rgba(180, 0, 0, 0.8)', width=1.2),
+                name=f'BB Upper ({bb_window},{bb_std})',
+                legendgroup='bollinger'
+            ), row=r_price, col=1)
+        fig.append_trace(
+            go.Scatter(
+                x=data.index, y=bb['bb_mid'],
+                mode='lines', line=dict(color='rgba(80, 80, 80, 0.8)', width=1.0, dash='dash'),
+                name=f'BB Mid SMA{bb_window}',
+                legendgroup='bollinger'
+            ), row=r_price, col=1)
+        fig.append_trace(
+            go.Scatter(
+                x=data.index, y=bb['bb_lower'],
+                mode='lines', line=dict(color='rgba(0, 120, 0, 0.8)', width=1.2),
+                fill='tonexty', fillcolor='rgba(180, 180, 255, 0.08)',
+                name=f'BB Lower ({bb_window},{bb_std})',
+                legendgroup='bollinger'
+            ), row=r_price, col=1)
+        if touch_upper.any():
+            fig.append_trace(
+                go.Scatter(
+                    x=data.index[touch_upper],
+                    y=data['high'][touch_upper],
+                    mode='markers',
+                    marker=dict(color='red', size=8, symbol='circle-open', line_width=2),
+                    name='Touch Upper Band', showlegend=True, legendgroup='bollinger'
+                ), row=r_price, col=1)
+        if touch_lower.any():
+            fig.append_trace(
+                go.Scatter(
+                    x=data.index[touch_lower],
+                    y=data['low'][touch_lower],
+                    mode='markers',
+                    marker=dict(color='green', size=8, symbol='circle-open', line_width=2),
+                    name='Touch Lower Band', showlegend=True, legendgroup='bollinger'
+                ), row=r_price, col=1)
 
     # Compute MACD:
     if 'macd' in show_advanced:
@@ -272,6 +424,9 @@ def vnquant_candle_stick(data,
                         width=800, height=600,
                         data_source='VND',
                         show_advanced=['volume', 'macd', 'rsi'],
+                        bollinger: bool = False,
+                        bb_window: int = 20,
+                        bb_std: float = 2.0,
                         **kargs):
     '''
     This function is to visualize a candle stick stock index with advanced metrics
@@ -287,6 +442,9 @@ def vnquant_candle_stick(data,
         height (int: 600): height of graph figure
         data_source (string: 'VND'): data source to get stock price belonging to ['VND', 'CAFE']
         show_advanced (list: ['volume', 'macd', 'rsi']): list of advanced stock index to show up. Each element belongs to ['volume', 'macd', 'rsi'] 
+        bollinger (bool: False): whether to overlay Bollinger Bands.
+        bb_window (int: 20): Bollinger Bands rolling window size.
+        bb_std (float: 2.0): Bollinger Bands number of standard deviations.
         
     Example:
         from vnquant import plot as pl
@@ -297,7 +455,8 @@ def vnquant_candle_stick(data,
             start_date='2022-01-01',
             end_date='2022-10-01',
             data_source='CAFE',
-            show_advanced = ['volume', 'macd', 'rsi']
+            show_advanced = ['volume', 'macd', 'rsi'],
+            bollinger=True, bb_window=20, bb_std=2.0
         )
     '''
     # Download data from source
@@ -305,24 +464,33 @@ def vnquant_candle_stick(data,
         vnquant_candle_stick_source(symbol=data, start_date=start_date, end_date=end_date,
                                      colors=colors, width=width,
                                      height=height, show_advanced=show_advanced,
-                                     data_source=data_source)
+                                     data_source=data_source,
+                                     bollinger=bollinger, bb_window=bb_window, bb_std=bb_std)
     else:
         if 'volume' in show_advanced:
             assert utils._isOHLCV(data)
             defau_cols = ['high', 'low', 'open', 'close', 'volume_match']
-            data = data[defau_cols].copy()
-            data.columns = defau_cols
+            avail_cols = [c for c in defau_cols if c in data.columns]
+            data = data[avail_cols].copy()
+            data.columns = avail_cols
+            col_map = {c: c for c in avail_cols}
+            col_map['volume_match'] = 'volume' if 'volume_match' in avail_cols else None
+            rename_map = {k: v for k, v in col_map.items() if v and k != v}
+            if rename_map:
+                data = data.rename(columns=rename_map)
         else:
             assert utils._isOHLC(data)
             defau_cols = ['high', 'low', 'open', 'close']
-            data = data[defau_cols].copy()
-            data.columns = defau_cols
-        
+            avail_cols = [c for c in defau_cols if c in data.columns]
+            data = data[avail_cols].copy()
+            data.columns = avail_cols
+
         x = data.index
 
         try:
             data.index = pd.DatetimeIndex(x)
-        except IndexError:
+            x = data.index
+        except (IndexError, TypeError):
             raise IndexError('index of dataframe must be DatetimeIndex!')
         
         if not isinstance(data.index, pd.core.indexes.datetimes.DatetimeIndex):
@@ -333,36 +501,81 @@ def vnquant_candle_stick(data,
         if end_date is None:
             end_date = max(data.index)
 
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02,
-                            # subplot_titles=('Price', 'Volume'),
-                            row_heights=[0.6, 0.4])
+        has_vol = 'volume' in show_advanced and (('volume' in data.columns) or ('volume_match' in data.columns))
+        rows = 2 if has_vol else 1
+        row_heights = [0.6, 0.4] if has_vol else [1.0]
+
+        fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.02,
+                            row_heights=row_heights)
 
         fig.append_trace(go.Candlestick(
             x=x,
             open=data['open'], high=data['high'],
             low=data['low'], close=data['close'],
             increasing_line_color=colors[0],
-            decreasing_line_color=colors[1]),
+            decreasing_line_color=colors[1],
+            name='price'),
             row=1, col=1)
 
-        if 'volume' in show_advanced:
-            volume = None
-            if 'volume' in data.columns:
-                volume = data['volume']
-            elif 'volume_match' in data.columns:
-                volume = data['volume_match']
-            
-            fig.append_trace(go.Bar(
-                x=x,
-                y=volume,
-                name='Volume'),
-                row=2, col=1)
+        if bollinger:
+            bb = compute_bollinger_bands(data, window=bb_window, num_std=bb_std, price_col='close')
+            touch_upper = (data['high'] >= bb['bb_upper'])
+            touch_lower = (data['low'] <= bb['bb_lower'])
+            fig.append_trace(
+                go.Scatter(
+                    x=x, y=bb['bb_upper'],
+                    mode='lines', line=dict(color='rgba(180, 0, 0, 0.8)', width=1.2),
+                    name=f'BB Upper ({bb_window},{bb_std})',
+                    legendgroup='bollinger'
+                ), row=1, col=1)
+            fig.append_trace(
+                go.Scatter(
+                    x=x, y=bb['bb_mid'],
+                    mode='lines', line=dict(color='rgba(80, 80, 80, 0.8)', width=1.0, dash='dash'),
+                    name=f'BB Mid SMA{bb_window}',
+                    legendgroup='bollinger'
+                ), row=1, col=1)
+            fig.append_trace(
+                go.Scatter(
+                    x=x, y=bb['bb_lower'],
+                    mode='lines', line=dict(color='rgba(0, 120, 0, 0.8)', width=1.2),
+                    fill='tonexty', fillcolor='rgba(180, 180, 255, 0.08)',
+                    name=f'BB Lower ({bb_window},{bb_std})',
+                    legendgroup='bollinger'
+                ), row=1, col=1)
+            if touch_upper.any():
+                fig.append_trace(
+                    go.Scatter(
+                        x=x[touch_upper],
+                        y=data['high'][touch_upper],
+                        mode='markers',
+                        marker=dict(color='red', size=8, symbol='circle-open', line_width=2),
+                        name='Touch Upper Band', showlegend=True, legendgroup='bollinger'
+                    ), row=1, col=1)
+            if touch_lower.any():
+                fig.append_trace(
+                    go.Scatter(
+                        x=x[touch_lower],
+                        y=data['low'][touch_lower],
+                        mode='markers',
+                        marker=dict(color='green', size=8, symbol='circle-open', line_width=2),
+                        name='Touch Lower Band', showlegend=True, legendgroup='bollinger'
+                    ), row=1, col=1)
+
+        if has_vol:
+            volume = data['volume'] if 'volume' in data.columns else data.get('volume_match', None)
+            if volume is not None:
+                fig.append_trace(go.Bar(
+                    x=x,
+                    y=volume,
+                    name='Volume'),
+                    row=2, col=1)
 
         fig.update_layout(
             title=title,
-            yaxis_title=xlab,
-            xaxis_title=ylab,
-            showlegend=False
+            yaxis_title=ylab,
+            xaxis_title=xlab,
+            showlegend=True
         )
 
         fig.show()
